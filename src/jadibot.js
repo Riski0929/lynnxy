@@ -11,6 +11,7 @@ const { default: WAConnection, useMultiFileAuthState, Browsers, DisconnectReason
 const { GroupCacheUpdate, GroupParticipantsUpdate, MessagesUpsert, Solving } = require('./message');
 
 global.client = {};
+const stopping = {}; // <<< Tambahan penting!
 
 
 const msgRetryCounterCache = new NodeCache();
@@ -75,6 +76,7 @@ async function JadiBot(conn, from, m, store) {
 					}, 3000);
 				}
 				if (connection === 'close') {
+				if (stopping[from]) return;
 					const reason = new Boom(lastDisconnect?.error)?.output.statusCode
 					console.log(reason)
 					if ([DisconnectReason.connectionLost, DisconnectReason.connectionClosed, DisconnectReason.restartRequired, DisconnectReason.timedOut, DisconnectReason.badSession, DisconnectReason.connectionReplaced].includes(reason)) {
@@ -154,12 +156,14 @@ async function StopJadiBot(conn, from, m) {
 		return conn.sendMessage(m.chat, { text: 'Anda Tidak Sedang jadibot!' }, { quoted: m })
 	}
 	try {
+	    stopping[from] = true; 
 		client[from].end('Stop')
 		client[from].ev.removeAllListeners()
 	} catch (e) {
 		console.log('Errornya di stopjadibot : ', e)
 	}
 	delete client[from]
+	delete stopping[from];
 	exec(`rm -rf ./database/jadibot/${from}`)
 	return m.reply('Sukses Keluar Dari Sessi Jadi bot')
 }

@@ -5,6 +5,7 @@ const pino = require('pino');
 const path = require('path');
 const axios = require('axios');
 const chalk = require('chalk');
+const cron = require('node-cron');
 const readline = require('readline');
 const { Boom } = require('@hapi/boom');
 const qrcode = require('qrcode-terminal');
@@ -14,6 +15,7 @@ const { exec, spawn, execSync } = require('child_process');
 const { parsePhoneNumber } = require('awesome-phonenumber');
 const { default: WAConnection, useMultiFileAuthState, Browsers, DisconnectReason, makeInMemoryStore, makeCacheableSignalKeyStore, fetchLatestBaileysVersion, proto, jidNormalizedUser, getAggregateVotesInPollMessage } = require('baileys');
 
+const { cmdAdd, cmdDel, cmdAddHit, addExpired, getPosition, getExpired, getStatus, checkStatus, getAllExpired, checkExpired } = require('./src/database');
 const { dataBase } = require('./src/database');
 const { app, server, PORT } = require('./src/server');
 const { GroupParticipantsUpdate, MessagesUpsert, Solving } = require('./src/message');
@@ -26,14 +28,6 @@ const question = (text) => new Promise((resolve) => rl.question(text, resolve))
 let pairingStarted = false;
 let phoneNumber;
 
-const userInfoSyt = () => {
-	try {
-		return os.userInfo().username
-	} catch (e) {
-		return process.env.USER || process.env.USERNAME || 'unknown';
-	}
-}
-
 global.fetchApi = async (path = '/', query = {}, options) => {
 	const urlnya = (options?.name || options ? ((options?.name || options) in global.APIs ? global.APIs[(options?.name || options)] : (options?.name || options)) : global.APIs['hitori'] ? global.APIs['hitori'] : (options?.name || options)) + path + (query ? '?' + decodeURIComponent(new URLSearchParams(Object.entries({ ...query }))) : '')
 	const { data } = await axios.get(urlnya, { ...((options?.name || options) ? {} : { headers: { 'accept': 'application/json', 'x-api-key': global.APIKeys[global.APIs['hitori']]}})})
@@ -43,11 +37,12 @@ global.fetchApi = async (path = '/', query = {}, options) => {
 const storeDB = dataBase(global.tempatStore);
 const database = dataBase(global.tempatDB);
 const msgRetryCounterCache = new NodeCache();
+const groupCache = new NodeCache({ stdTTL: 5 * 60, useClones: false });
 
 assertInstalled(process.platform === 'win32' ? 'where ffmpeg' : 'command -v ffmpeg', 'FFmpeg', 0);
-//assertInstalled(process.platform === 'win32' ? 'where magick' : 'command -v convert', 'ImageMagick', 0);
+assertInstalled(process.platform === 'win32' ? 'where magick' : 'command -v convert', 'ImageMagick', 0);
 console.log(chalk.greenBright('✅  All external dependencies are satisfied'));
-console.log(chalk.green.bold(`╔═════[${`${chalk.cyan(userInfoSyt())}@${chalk.cyan(os.hostname())}`}]═════`));
+console.log(chalk.green.bold(`╔═════[${`${chalk.cyan(os.userInfo().username)}@${chalk.cyan(os.hostname())}`}]═════`));
 print('OS', `${os.platform()} ${os.release()} ${os.arch()}`);
 print('Uptime', `${Math.floor(os.uptime() / 3600)} h ${Math.floor((os.uptime() % 3600) / 60)} m`);
 print('Shell', process.env.SHELL || process.env.COMSPEC || 'unknown');
@@ -67,6 +62,31 @@ server.listen(PORT, () => {
 	* Follow https://github.com/nazedev
 	* Whatsapp : https://whatsapp.com/channel/0029VaWOkNm7DAWtkvkJBK43
 */
+
+
+
+const pluginsLoader = async (directory) => {
+    let plugins = [];
+    const folders = fs.readdirSync(directory);
+    folders.forEach(file => {
+        const filePath = path.join(directory, file);
+        if (filePath.endsWith(".js")) {
+            try {
+                const resolvedPath = require.resolve(filePath);
+                if (require.cache[resolvedPath]) {
+                    delete require.cache[resolvedPath];
+                }
+                const plugin = require(filePath);
+                plugin.__filename = filePath;
+                plugins.push(plugin); 
+                console.log(chalk.green(`${file}`)); // Gunakan chalk untuk warna hijau
+            } catch (error) {
+                console.log(chalk.red(`${filePath}:`), error); // Gunakan warna merah untuk error
+            }
+        }
+    });
+    return plugins;
+};
 
 async function startNazeBot() {
 	const { state, saveCreds } = await useMultiFileAuthState('nazedev');
@@ -144,7 +164,7 @@ async function startNazeBot() {
 		browser: Browsers.ubuntu('Chrome'),
 		generateHighQualityLinkPreview: true,
 		//waWebSocketUrl: 'wss://web.whatsapp.com/ws',
-		cachedGroupMetadata: async (jid) => store.groupMetadata[jid],
+		cachedGroupMetadata: async (jid) => groupCache.get(jid),
 		shouldSyncHistoryMessage: msg => {
 			console.log(`\x1b[32mMemuat Chat [${msg.progress || 0}%]\x1b[39m`);
 			return !!msg.syncType;
@@ -231,6 +251,12 @@ async function startNazeBot() {
 			}
 		}
 		if (connection == 'open') {
+		
+		if (!global.plugins) {
+    console.log(chalk.cyan.bold('Plugin Load')); // Warna kuning dan bold untuk kesan dramatis
+    global.plugins = await pluginsLoader(path.resolve(__dirname, './plugins'));
+}
+		
 			console.log('Connected to : ' + JSON.stringify(naze.user, null, 2));
 			let botNumber = await naze.decodeJid(naze.user.id);
 			if (global.db?.set[botNumber] && !global.db?.set[botNumber]?.join) {
@@ -274,6 +300,36 @@ async function startNazeBot() {
 		}
 	});
 	
+	cron.schedule('00 00 * * *', async () => {
+			console.log('Reseted Limit Users')
+			const botNumber = naze.decodeJid(naze.user.id);
+			const ownerNumber = db?.set?.[botNumber]?.owner?.map(x => x.id) || owner;
+			let user = Object.keys(db.users)
+			for (let jid of user) {
+				const limitUser = db.users[jid].vip ? limit.vip : checkStatus(jid, premium) ? limit.premium : limit.free
+				if (db.users[jid].limit < limitUser) db.users[jid].limit = limitUser
+			}
+			if (set?.autobackup) {
+				let datanya = './database/' + tempatDB;
+				if (tempatDB.startsWith('mongodb')) {
+					datanya = './database/backup_database.json';
+					fs.writeFileSync(datanya, JSON.stringify(global.db, null, 2), 'utf-8');
+				}
+				let tglnya = new Date().toISOString().replace(/[:.]/g, '-');
+				for (let o of ownerNumber) {
+					try {
+						await naze.sendMessage(o, { document: fs.readFileSync(datanya), mimetype: 'application/json', fileName: tglnya + '_database.json' })
+						console.log(`[AUTO BACKUP] Backup berhasil dikirim ke ${o}`);
+					} catch (e) {
+						console.error(`[AUTO BACKUP] Gagal mengirim backup ke ${o}:`, error);
+					}
+				}
+			}
+		}, {
+			scheduled: true,
+			timezone: 'Asia/Jakarta'
+		});
+	
 	naze.ev.on('call', async (call) => {
 		let botNumber = await naze.decodeJid(naze.user.id);
 		if (global.db?.set[botNumber]?.anticall) {
@@ -288,16 +344,17 @@ async function startNazeBot() {
 	});
 	
 	naze.ev.on('messages.upsert', async (message) => {
-		await MessagesUpsert(naze, message, store);
+		await MessagesUpsert(naze, message, store, groupCache);
 	});
 	
 	naze.ev.on('group-participants.update', async (update) => {
-		await GroupParticipantsUpdate(naze, update, store);
+		await GroupParticipantsUpdate(naze, update, store, groupCache);
 	});
 	
 	naze.ev.on('groups.update', (update) => {
 		for (const n of update) {
 			if (store.groupMetadata[n.id]) {
+				groupCache.set(n.id, n);
 				Object.assign(store.groupMetadata[n.id], n);
 			}
 		}

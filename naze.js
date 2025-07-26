@@ -53,7 +53,7 @@ const { rdGame, iGame, tGame, gameSlot, gameCasinoSolo, gameSamgongSolo, gameMer
 const { pinterest, wallpaper, remini, wikimedia, hitamkan, yanzGpt, mediafireDl, ringtone, styletext, instagramDl, tiktokDl, facebookDl, instaStalk, telegramStalk, tiktokStalk, genshinStalk, instaStory, bk9Ai, spotifyDl, ytMp4, ytMp3, NvlGroup, quotedLyo, youSearch, gptLogic, savetube, simi, geminiAi } = require('./lib/screaper');
 const { unixTimestampSeconds, generateMessageTag, processTime, webApi, getRandom, getBuffer, fetchJson, runtime, clockString, sleep, isUrl, getTime, formatDate, formatp, jsonformat, reSize, toHD, logic, generateProfilePicture, bytesToSize, errorCache, normalize, getSizeMedia, parseMention, getGroupAdmins, readFileTxt, readFileJson, getHashedPassword, generateAuthToken, cekMenfes, generateToken, batasiTeks, randomText, isEmoji, getTypeUrlMedia, pickRandom, convertTimestampToDate, getAllHTML, tarBackup } = require('./lib/function');
 
-module.exports = naze = async (naze, m, msg, store) => {
+module.exports = naze = async (naze, m, msg, store, groupCache) => {
 	const botNumber = naze.decodeJid(naze.user.id);
 	const ownerNumber = db?.set?.[botNumber]?.owner?.map(x => x.id) || owner;
 	
@@ -133,7 +133,58 @@ module.exports = naze = async (naze, m, msg, store) => {
 		const isLimit = db.users[m.sender] ? (db.users[m.sender].limit > 0) : false
 		const isPremium = isCreator || checkStatus(m.sender, premium) || false
 		const isNsfw = m.isGroup ? db.groups[m.chat].nsfw : false
-		
+		const isBotUtama = command && m.isGroup && m.chat === '120363288386861612@g.us' && !botNumber.includes(number_bot);
+	
+		const plug = {
+    naze,
+    isCreator,
+    command,
+    isCmd,
+    m,
+    text,
+    sleep,
+    setLimit,
+    isLimit,
+    prefix,
+    args,
+    botNumber,
+    isPremium,
+    isGroup: m.isGroup,
+    isPrivate: !m.isGroup,
+    reply: m.reply.bind(m),
+};
+
+for (let plugin of global.plugins) {
+    try {
+        // Cek mute
+        if (m.isGroup && db.groups[m.chat]?.mute && !isCreator) continue;
+        if (isBotUtama) continue;
+
+        // Jalankan plugin.before kalau ada
+        if (typeof plugin.before === 'function') {
+            await plugin.before(m, plug);
+        }
+
+        // Jalankan command kalau cocok
+        if (
+            Array.isArray(plugin.command) &&
+            plugin.command.includes(command.toLowerCase())
+        ) {
+            if (plugin.owner && !isCreator) return m.reply(mess.owner);
+            if (plugin.botutama && botNumber !== global.number_bot + '@s.whatsapp.net') return m.reply(`Fitur ini hanya bisa dijalankan oleh *Bot Utama*\n@${global.number_bot}`)
+            if (plugin.premium && !isPremium) return m.reply(mess.prem);
+            if (plugin.group && !plug.isGroup) return m.reply(mess.group);
+            if (plugin.admin && !m.isAdmin) return m.reply(mess.admin);
+            if (plugin.private && !plug.isPrivate) return m.reply(mess.private);
+            if (typeof plugin !== "function") return;
+            await plugin(m, plug);
+        }
+
+    } catch (err) {
+        console.error(err);
+    }
+}
+				
 		// Fake
 		const fkontak = {
 			key: {
@@ -151,35 +202,8 @@ module.exports = naze = async (naze, m, msg, store) => {
 			}
 		}
 		
-		// Reset Limit
-		cron.schedule('00 00 * * *', async () => {
-			cmdDel(db.hit);
-			console.log('Reseted Limit Users')
-			let user = Object.keys(db.users)
-			for (let jid of user) {
-				const limitUser = db.users[jid].vip ? limit.vip : checkStatus(jid, premium) ? limit.premium : limit.free
-				if (db.users[jid].limit < limitUser) db.users[jid].limit = limitUser
-			}
-			if (set?.autobackup) {
-				let datanya = './database/' + tempatDB;
-				if (tempatDB.startsWith('mongodb')) {
-					datanya = './database/backup_database.json';
-					fs.writeFileSync(datanya, JSON.stringify(global.db, null, 2), 'utf-8');
-				}
-				let tglnya = new Date().toISOString().replace(/[:.]/g, '-');
-				for (let o of ownerNumber) {
-					try {
-						await naze.sendMessage(o, { document: fs.readFileSync(datanya), mimetype: 'application/json', fileName: tglnya + '_database.json' })
-						console.log(`[AUTO BACKUP] Backup berhasil dikirim ke ${o}`);
-					} catch (e) {
-						console.error(`[AUTO BACKUP] Gagal mengirim backup ke ${o}:`, error);
-					}
-				}
-			}
-		}, {
-			scheduled: true,
-			timezone: 'Asia/Jakarta'
-		});
+		
+		
 		
 		// Auto Set Bio
 		if (set.autobio) {
@@ -305,8 +329,8 @@ module.exports = naze = async (naze, m, msg, store) => {
 		
 		// Cmd Media
 		let fileSha256;
-		if (m.isMedia && m.msg.fileSha256 && db.cmd && (m.msg.fileSha256.toString('base64') in db.cmd)) {
-			let hash = db.cmd[m.msg.fileSha256.toString('base64')]
+		if (m.isMedia && m.msg.fileSha256 && (m.msg.fileSha256.toString('base64') in global.db.cmd)) {
+			let hash = global.db.cmd[m.msg.fileSha256.toString('base64')]
 			fileSha256 = hash.text
 		}
 		
@@ -2156,8 +2180,8 @@ module.exports = naze = async (naze, m, msg, store) => {
 			case 'sticker': case 'stiker': case 's': case 'stickergif': case 'stikergif': case 'sgif': case 'stickerwm': case 'swm': case 'curi': case 'colong': case 'take': case 'stickergifwm': case 'sgifwm': {
 				if (!/image|video|sticker/.test(quoted.type)) return m.reply(`Kirim/reply gambar/video/gif dengan caption ${prefix + command}\nDurasi Image/Video/Gif 1-9 Detik`)
 				let media = await quoted.download()
-				let teks1 = text.split`|`[0] ? text.split`|`[0] : packname
-				let teks2 = text.split`|`[1] ? text.split`|`[1] : author
+				let teks1 = text.split`|`[0] ? text.split`|`[0] : ''
+				let teks2 = text.split`|`[1] ? text.split`|`[1] : ''
 				if (/image|webp/.test(mime)) {
 					m.reply(mess.wait)
 					await naze.sendAsSticker(m.chat, media, m, { packname: teks1, author: teks2 })
@@ -3201,14 +3225,14 @@ module.exports = naze = async (naze, m, msg, store) => {
 			break
 			case 'jodohku': {
 				if (!m.isGroup) return m.reply(mess.group)
-				let member = (store.groupMetadata?.[m.chat]?.participants || m.metadata?.participants || []).map(a => a.id)
+				let member = (store.groupMetadata?.[m.chat]?.participants || groupCache.get(m.chat)?.participants || m.metadata?.participants || []).map(a => a.id)
 				let jodoh = pickRandom(member)
 				m.reply(`👫Jodoh mu adalah\n@${m.sender.split('@')[0]} ❤ @${jodoh ? jodoh.split('@')[0] : '0'}`);
 			}
 			break
 			case 'jadian': {
 				if (!m.isGroup) return m.reply(mess.group)
-				let member = (store.groupMetadata?.[m.chat]?.participants || m.metadata?.participants || []).map(a => a.id)
+				let member = (store.groupMetadata?.[m.chat]?.participants || groupCache.get(m.chat)?.participants || m.metadata?.participants || []).map(a => a.id)
 				let jadian1 = pickRandom(member)
 				let jadian2 = pickRandom(member)
 				m.reply(`Ciee yang Jadian💖 Jangan lupa Donasi🗿\n@${jadian1.split('@')[0]} ❤ @${jadian2.split('@')[0]}`);
